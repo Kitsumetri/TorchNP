@@ -94,32 +94,32 @@ Q = XW_q^\top+b_q,\quad K = XW_k^\top+b_k,\quad V = XW_v^\top+b_v
 $$
 
 $$
-S_h = \frac{Q_hK_h^\top}{\sqrt{d_h}} + M,\qquad A_h = \operatorname{softmax}(S_h)
+S_h = \frac{Q_hK_h^\top}{\sqrt{d_h}} + M,\qquad A_h = \mathrm{softmax}(S_h)
 $$
 
 $$
-A_h^d = \operatorname{dropout}(A_h),\qquad
-\operatorname{MHA}(X) = \operatorname{concat}_h(A_h^dV_h)W_o^\top+b_o,\qquad
-\operatorname{SA}(X) = \operatorname{dropout}(\operatorname{MHA}(X))
+A_h^d = \mathrm{dropout}(A_h),\qquad
+\mathrm{MHA}(X) = \mathrm{concat}_h(A_h^dV_h)W_o^\top+b_o,\qquad
+\mathrm{SA}(X) = \mathrm{dropout}(\mathrm{MHA}(X))
 $$
 
 $$
-\operatorname{FF}(X) = \operatorname{dropout}\left(
-W_2\operatorname{dropout}\left(\sigma(W_1X+b_1)\right)+b_2\right)
+\mathrm{FF}(X) = \mathrm{dropout}\left(
+W_2\mathrm{dropout}\left(\sigma(W_1X+b_1)\right)+b_2\right)
 $$
 
 Post-norm:
 
 $$
-Z = \operatorname{LN}_1(X+\operatorname{SA}(X)),\qquad
-Y = \operatorname{LN}_2(Z+\operatorname{FF}(Z))
+Z = \mathrm{LN}_1(X+\mathrm{SA}(X)),\qquad
+Y = \mathrm{LN}_2(Z+\mathrm{FF}(Z))
 $$
 
 Pre-norm:
 
 $$
-Z = X+\operatorname{SA}(\operatorname{LN}_1(X)),\qquad
-Y = Z+\operatorname{FF}(\operatorname{LN}_2(Z))
+Z = X+\mathrm{SA}(\mathrm{LN}_1(X)),\qquad
+Y = Z+\mathrm{FF}(\mathrm{LN}_2(Z))
 $$
 
 Layer norm для строки $x\in\mathbb{R}^D$:
@@ -135,21 +135,21 @@ $$
 Chain rule на уровне слоя (post-norm):
 
 $$
-\bar U_2 = \operatorname{LN}_2'(\bar Y),\qquad
-\bar Z = \bar U_2 + \operatorname{FF}'(\bar U_2),
+\bar U_2 = \mathrm{LN}_2'(\bar Y),\qquad
+\bar Z = \bar U_2 + \mathrm{FF}'(\bar U_2),
 $$
 
 $$
-\bar U_1 = \operatorname{LN}_1'(\bar Z),\qquad
-\bar X = \bar U_1 + \operatorname{SA}'(\bar U_1).
+\bar U_1 = \mathrm{LN}_1'(\bar Z),\qquad
+\bar X = \bar U_1 + \mathrm{SA}'(\bar U_1).
 $$
 
 Pre-norm:
 
 $$
-\bar U_1 = \bar Y + \operatorname{LN}_2'(\operatorname{FF}'(\bar Y)),
+\bar U_1 = \bar Y + \mathrm{LN}_2'(\mathrm{FF}'(\bar Y)),
 \qquad
-\bar X = \bar U_1 + \operatorname{LN}_1'(\operatorname{SA}'(\bar U_1)).
+\bar X = \bar U_1 + \mathrm{LN}_1'(\mathrm{SA}'(\bar U_1)).
 $$
 
 Ключевые формулы, полностью выведенные в docstring-ах:
@@ -160,7 +160,7 @@ $$
   где $g_i=\bar y_i\gamma_i$;
 - softmax: $\bar s_i = p_i\left(\bar p_i-\sum_j p_j\bar p_j\right)$;
 - attention: $\bar A_h^d = \bar O_hV_h^\top$, $\bar V_h=(A_h^d)^\top\bar O_h$,
-  $\bar A_h = \operatorname{dropout}'(\bar A_h^d)$,
+  $\bar A_h = \mathrm{dropout}'(\bar A_h^d)$,
   $\bar S_h = A_h\odot(\bar A_h-\sum_j A_{h,ij}\bar A_{h,ij})$,
   $\bar Q_h=\frac{1}{\sqrt{d_h}}\bar S_hK_h$,
   $\bar K_h=\frac{1}{\sqrt{d_h}}\bar S_h^\top Q_h$;

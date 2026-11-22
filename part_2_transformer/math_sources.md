@@ -39,21 +39,21 @@ $$
 $$
 \frac{\partial L}{\partial x_i}
 = \sum_o \bar y_o W_{oi}
-\quad\Longrightarrow\quad
+\quad\Rightarrow\quad
 \bar X = \bar YW,
 $$
 
 $$
 \frac{\partial L}{\partial W_{oi}}
 = \sum_r \bar y_{r,o}x_{r,i}
-\quad\Longrightarrow\quad
+\quad\Rightarrow\quad
 \bar W = \bar Y_{\mathrm{flat}}^\top X_{\mathrm{flat}},
 $$
 
 $$
 \frac{\partial L}{\partial b_o}
 = \sum_r \bar y_{r,o}
-\quad\Longrightarrow\quad
+\quad\Rightarrow\quad
 \bar b = \sum_r \bar Y_r.
 $$
 
@@ -88,7 +88,7 @@ $$
 $$
 \frac{\partial v}{\partial x_i}
 = \frac{2}{D}(x_i-\mu)
-\quad\Longrightarrow\quad
+\quad\Rightarrow\quad
 \frac{\partial \sigma}{\partial x_i}
 = \frac{x_i-\mu}{D\sigma}
 = \frac{\hat x_i}{D}.
@@ -224,7 +224,7 @@ $$
 Пусть
 
 $$
-\Phi(x) = \frac12\left(1+\operatorname{erf}\left(\frac{x}{\sqrt2}\right)\right),
+\Phi(x) = \frac12\left(1+\mathrm{erf}\left(\frac{x}{\sqrt2}\right)\right),
 \qquad
 \varphi(x) = \frac{1}{\sqrt{2\pi}}e^{-x^2/2}.
 $$
@@ -276,7 +276,7 @@ Score и веса:
 $$
 S_h = \frac{Q_hK_h^\top}{\sqrt{d_h}} + M_h,
 \qquad
-A_h = \operatorname{softmax}(S_h),
+A_h = \mathrm{softmax}(S_h),
 $$
 
 где `M_h` — сумма broadcast-масок: `src_mask`, `src_key_padding_mask`,
@@ -286,7 +286,7 @@ $$
 Dropout весов внимания:
 
 $$
-A_h^d = \operatorname{dropout}(A_h).
+A_h^d = \mathrm{dropout}(A_h).
 $$
 
 Контекст и выход голов:
@@ -297,14 +297,14 @@ O_h = A_h^d V_h
 $$
 
 $$
-O = \operatorname{merge\_heads}(O_1,\ldots,O_H)
+O = \mathrm{merge}(O_1,\ldots,O_H)
 \in R^{L×N×E},
 $$
 
 $$
 U = OW_o^\top+b_o,
 \qquad
-\operatorname{SA}(X) = \operatorname{dropout}(U).
+\mathrm{SA}(X) = \mathrm{dropout}(U).
 $$
 
 ### 6.2. Backward
@@ -314,7 +314,7 @@ $$
 **Выходной dropout:**
 
 $$
-\bar U = \operatorname{dropout}'(\bar Y).
+\bar U = \mathrm{dropout}'(\bar Y).
 $$
 
 **Выходная проекция:**
@@ -338,7 +338,7 @@ $$
 **Dropout весов внимания:**
 
 $$
-\bar A_h = \operatorname{dropout}'(\bar A_h^d).
+\bar A_h = \mathrm{dropout}'(\bar A_h^d).
 $$
 
 **Softmax:**
@@ -410,13 +410,13 @@ A = \sigma(H),
 $$
 
 $$
-D_1 = \operatorname{dropout}(A),
+D_1 = \mathrm{dropout}(A),
 \qquad
 P = D_1W_2^\top+b_2,
 $$
 
 $$
-\operatorname{FF}(X) = \operatorname{dropout}(P).
+\mathrm{FF}(X) = \mathrm{dropout}(P).
 $$
 
 Здесь `W_1 ∈ R^{F×E}`, `W_2 ∈ R^{E×F}`, `σ` — ReLU или точный GELU.
@@ -426,7 +426,7 @@ $$
 Пусть `Ȳ` — градиент по выходу FFN.
 
 $$
-\bar P = \operatorname{dropout}'(\bar Y),
+\bar P = \mathrm{dropout}'(\bar Y),
 $$
 
 $$
@@ -438,7 +438,7 @@ $$
 $$
 
 $$
-\bar A = \operatorname{dropout}'(\bar D_1),
+\bar A = \mathrm{dropout}'(\bar D_1),
 $$
 
 $$
@@ -464,33 +464,33 @@ $$
 Forward:
 
 $$
-U_1 = X+\operatorname{SA}(X),
+U_1 = X+\mathrm{SA}(X),
 \qquad
-Z = \operatorname{LN}_1(U_1),
+Z = \mathrm{LN}_1(U_1),
 $$
 
 $$
-U_2 = Z+\operatorname{FF}(Z),
+U_2 = Z+\mathrm{FF}(Z),
 \qquad
-Y = \operatorname{LN}_2(U_2).
+Y = \mathrm{LN}_2(U_2).
 $$
 
 Backward при `Ȳ = ∂L/∂Y`:
 
 $$
-\bar U_2 = \operatorname{LN}_2'(\bar Y),
+\bar U_2 = \mathrm{LN}_2'(\bar Y),
 $$
 
 $$
-\bar Z = \bar U_2 + \operatorname{FF}'(\bar U_2),
+\bar Z = \bar U_2 + \mathrm{FF}'(\bar U_2),
 $$
 
 $$
-\bar U_1 = \operatorname{LN}_1'(\bar Z),
+\bar U_1 = \mathrm{LN}_1'(\bar Z),
 $$
 
 $$
-\bar X = \bar U_1 + \operatorname{SA}'(\bar U_1).
+\bar X = \bar U_1 + \mathrm{SA}'(\bar U_1).
 $$
 
 Пояснение: `FF'` возвращает градиент по своему входу `Z`, а остаточная
@@ -502,28 +502,28 @@ $$
 Forward:
 
 $$
-A_1 = \operatorname{LN}_1(X),
+A_1 = \mathrm{LN}_1(X),
 \qquad
-U_1 = X+\operatorname{SA}(A_1),
+U_1 = X+\mathrm{SA}(A_1),
 $$
 
 $$
-A_2 = \operatorname{LN}_2(U_1),
+A_2 = \mathrm{LN}_2(U_1),
 \qquad
-Y = U_1+\operatorname{FF}(A_2).
+Y = U_1+\mathrm{FF}(A_2).
 $$
 
 Backward:
 
 $$
 \bar U_1
-= \bar Y + \operatorname{LN}_2'\!\left(\operatorname{FF}'(\bar Y)\right),
+= \bar Y + \mathrm{LN}_2'\!\left(\mathrm{FF}'(\bar Y)\right),
 $$
 
 $$
 \bar X
 = \bar U_1
-+ \operatorname{LN}_1'\!\left(\operatorname{SA}'(\bar U_1)\right).
++ \mathrm{LN}_1'\!\left(\mathrm{SA}'(\bar U_1)\right).
 $$
 
 Здесь `FF'(Ȳ)` — градиент по `A_2`, затем `LN_2'` переводит его в градиент
@@ -534,26 +534,26 @@ $$
 Для весовой матрицы формы `(D_out, D_in)`:
 
 $$
-\operatorname{fan}_{in} = D_{in},
+\mathrm{fan}_{in} = D_{in},
 \qquad
-\operatorname{fan}_{out} = D_{out}.
+\mathrm{fan}_{out} = D_{out}.
 $$
 
 **Xavier/Glorot uniform** (используется для `in_proj_weight`):
 
 $$
-\text{bound} = \sqrt{\frac{6}{\operatorname{fan}_{in}+\operatorname{fan}_{out}}},
+\mathrm{bound} = \sqrt{\frac{6}{\mathrm{fan}_{in}+\mathrm{fan}_{out}}},
 \qquad
-W_{ij}\sim U(-\text{bound},\text{bound}).
+W_{ij}\sim U(-\mathrm{bound},\mathrm{bound}).
 $$
 
 **Kaiming uniform** с `a = √5` (используется для `out_proj` и линейных слоёв):
 
 $$
-\text{bound} = \sqrt{\frac{6}{(1+a^2)\operatorname{fan}_{in}}}
-= \frac{1}{\sqrt{\operatorname{fan}_{in}}},
+\mathrm{bound} = \sqrt{\frac{6}{(1+a^2)\mathrm{fan}_{in}}}
+= \frac{1}{\sqrt{\mathrm{fan}_{in}}},
 \qquad
-W_{ij}\sim U(-\text{bound},\text{bound}).
+W_{ij}\sim U(-\mathrm{bound},\mathrm{bound}).
 $$
 
 **Bias:**
@@ -562,9 +562,9 @@ $$
 - `linear1.bias`, `linear2.bias` — как в `torch.nn.Linear`:
 
 $$
-\text{bound} = \frac{1}{\sqrt{\operatorname{fan}_{in}}},
+\mathrm{bound} = \frac{1}{\sqrt{\mathrm{fan}_{in}}},
 \qquad
-b_i\sim U(-\text{bound},\text{bound}).
+b_i\sim U(-\mathrm{bound},\mathrm{bound}).
 $$
 
 **LayerNorm:** `γ = 1`, `β = 0` (при наличии bias).
