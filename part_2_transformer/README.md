@@ -9,7 +9,8 @@ chain rule, накапливает градиенты параметров и в
 Все формулы выведены в docstring-ах:
 [`ops.py`](src/nptorch/nn/ops.py) — отдельные операции,
 [`transformer.py`](src/nptorch/nn/transformer.py) — attention, FFN, layer norm
-и полная цепочка обратного прохода слоя.
+и полная цепочка обратного прохода слоя. Полные выкладки собраны в
+[`math_sources.md`](math_sources.md).
 
 ## Что реализовано
 
@@ -37,8 +38,8 @@ autograd-движок и прочие слои удалены.
 
 ```
 part_2_transformer/
-├── main.py                  # parity-демо и синхронное обучение с torch
-├── main.ipynb               # то же в ноутбуке + график обучения
+├── main.ipynb               # parity, конечные разности, обучение, график
+├── math_sources.md          # полные математические выкладки
 ├── README.md
 ├── src/nptorch/
 │   ├── __init__.py          # TransformerEncoderLayer, init, nn
@@ -185,9 +186,10 @@ $$
 
 ## Проверка с torch
 
-`main.py` сравнивает NumPy-слой и `torch.nn.TransformerEncoderLayer` с
-одинаковыми весами (`float64`, CPU, `dropout=0`). Сравниваются выход,
-$\partial L/\partial X$ и градиенты **всех** параметров:
+[`main.ipynb`](main.ipynb) сравнивает NumPy-слой и
+`torch.nn.TransformerEncoderLayer` с одинаковыми весами (`float64`, CPU,
+`dropout=0`). Сравниваются выход, $\partial L/\partial X$ и градиенты
+**всех** параметров:
 
 ```
 configuration     forward      d_src   d_params
@@ -207,8 +209,8 @@ pre-norm, post-norm и dropout с зафиксированными маскам�
 
 ## Демо обучения
 
-`main.py` обучает один слой регрессии на `tanh(XR+b)` и синхронно обновляет
-torch-близнеца теми же градиентами и тем же SGD:
+[`main.ipynb`](main.ipynb) обучает один слой регрессии на `tanh(XR+b)` и
+синхронно обновляет torch-близнеца теми же градиентами и тем же SGD:
 
 ```
 loss: 1.406524 -> 0.287498 (20.4% of the initial value)
@@ -217,8 +219,8 @@ max |parameter diff| after updates:  2.22e-16
 state_dict keys match torch: True
 ```
 
-Ноутбук [`main.ipynb`](main.ipynb) содержит те же сравнения, проверку
-конечными разностями и график loss для обеих реализаций.
+Ноутбук самодостаточен: все вспомогательные функции определены внутри него,
+отдельного `main.py` нет. Полные формулы — в [`math_sources.md`](math_sources.md).
 
 ## Запуск
 
@@ -234,9 +236,6 @@ COVERAGE_FILE=/tmp/part2.coverage ../.venv/bin/python -m coverage run \
 COVERAGE_FILE=/tmp/part2.coverage ../.venv/bin/python -m coverage report -m
 
 # демо
-../.venv/bin/python main.py
-
-# ноутбук
 ../.venv/bin/jupyter notebook main.ipynb
 ```
 

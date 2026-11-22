@@ -8,7 +8,8 @@ the chain rule explicitly.
 
 The parameter names in :attr:`TransformerEncoderLayer.params` match
 ``torch.nn.TransformerEncoderLayer.state_dict()`` exactly, which makes copying
-weights and comparing gradients with PyTorch straightforward.
+weights and comparing gradients with PyTorch straightforward.  The complete
+mathematical derivations are also collected in ``math_sources.md``.
 """
 
 from __future__ import annotations

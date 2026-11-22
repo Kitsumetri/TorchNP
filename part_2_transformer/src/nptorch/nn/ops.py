@@ -2,7 +2,9 @@
 
 Every kernel caches exactly the values needed by its backward pass.  There is
 no automatic differentiation: each backward function below evaluates the
-analytic gradient and its docstring contains the complete derivation.
+analytic gradient and its docstring contains the complete derivation.  The
+same derivations, expanded with intermediate steps, are collected in
+``math_sources.md`` at the project root.
 """
 
 from __future__ import annotations
