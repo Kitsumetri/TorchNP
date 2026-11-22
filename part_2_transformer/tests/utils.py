@@ -1,4 +1,4 @@
-"""Shared helpers for the NumPy-vs-torch parity tests."""
+"""Shared helpers for the NumPy-vs-torch gradient tests."""
 
 from __future__ import annotations
 
@@ -12,194 +12,202 @@ if str(ROOT) not in sys.path:
 import numpy as np
 import torch
 
-from src.nptorch import Tensor
+from src.nptorch import TransformerEncoderLayer
 
 
 def assert_close(
     testcase,
     actual,
     expected,
-    atol: float = 1e-10,
-    rtol: float = 1e-8,
+    atol: float = 2e-12,
+    rtol: float = 1e-10,
     msg: str = "",
 ) -> float:
+    """Assert closeness and return the maximum absolute difference."""
     actual = np.asarray(actual)
     expected = np.asarray(expected)
-    prefix = f"{msg}: " if msg else ""
     testcase.assertEqual(
-        actual.shape, expected.shape, f"{prefix}shape {actual.shape} != {expected.shape}"
+        actual.shape,
+        expected.shape,
+        f"{msg}: shape {actual.shape} != {expected.shape}",
     )
     if actual.size == 0:
         return 0.0
-    if not np.all(np.isfinite(actual)):
-        testcase.fail(f"{prefix}non-finite values in actual result")
-    if not np.all(np.isfinite(expected)):
-        testcase.fail(f"{prefix}non-finite values in expected result")
-    abs_err = np.abs(actual - expected)
-    tol = atol + rtol * np.abs(expected)
-    max_err = float(abs_err.max())
-    if np.any(abs_err > tol):
-        flat = int(np.argmax(abs_err - tol))
-        index = np.unravel_index(flat, actual.shape)
-        testcase.fail(
-            f"{prefix}max abs error {max_err:.3e} at {index}: "
-            f"actual={actual[index]!r}, expected={expected[index]!r}, "
-            f"atol={atol}, rtol={rtol}"
-        )
-    return max_err
+    diff = float(np.max(np.abs(actual - expected)))
+    np.testing.assert_allclose(
+        actual,
+        expected,
+        atol=atol,
+        rtol=rtol,
+        err_msg=f"{msg}: max|diff|={diff:.3e}",
+    )
+    return diff
 
 
-def torch_tensor(array: np.ndarray, requires_grad: bool = True) -> torch.Tensor:
-    return torch.tensor(array.copy(), requires_grad=requires_grad)
+def make_pair(
+    d_model: int,
+    nhead: int,
+    dim_feedforward: int,
+    *,
+    dropout: float = 0.0,
+    activation: str = "relu",
+    layer_norm_eps: float = 1e-5,
+    batch_first: bool = False,
+    norm_first: bool = False,
+    bias: bool = True,
+) -> tuple[TransformerEncoderLayer, torch.nn.TransformerEncoderLayer]:
+    """Build a NumPy layer and a torch layer with identical parameters."""
+    torch_layer = torch.nn.TransformerEncoderLayer(
+        d_model=d_model,
+        nhead=nhead,
+        dim_feedforward=dim_feedforward,
+        dropout=dropout,
+        activation=activation,
+        layer_norm_eps=layer_norm_eps,
+        batch_first=batch_first,
+        norm_first=norm_first,
+        bias=bias,
+        dtype=torch.float64,
+    ).eval()
+    numpy_layer = TransformerEncoderLayer(
+        d_model=d_model,
+        nhead=nhead,
+        dim_feedforward=dim_feedforward,
+        dropout=dropout,
+        activation=activation,
+        layer_norm_eps=layer_norm_eps,
+        batch_first=batch_first,
+        norm_first=norm_first,
+        bias=bias,
+    ).eval()
+    numpy_layer.load_state_dict(torch_layer.state_dict())
+    return numpy_layer, torch_layer
 
 
-def copy_weights(torch_module, np_module) -> None:
-    state = {
-        key: value.detach().cpu().numpy()
-        for key, value in torch_module.state_dict().items()
-    }
-    np_module.load_state_dict(state)
-
-
-def np_param_grads(module) -> dict[str, np.ndarray | None]:
-    result = {}
-    for name, param in module.named_parameters():
-        result[name] = None if param._grad is None else param._grad.copy()
-    return result
-
-
-def torch_param_grads(module) -> dict[str, np.ndarray | None]:
-    result = {}
-    for name, param in module.named_parameters():
-        result[name] = None if param.grad is None else param.grad.detach().numpy().copy()
-    return result
-
-
-def assert_param_grads_close(
+def parity_check(
     testcase,
-    torch_module,
-    np_module,
-    atol: float,
-    rtol: float,
-    msg: str = "",
-) -> float:
-    torch_grads = torch_param_grads(torch_module)
-    np_grads = np_param_grads(np_module)
-    testcase.assertEqual(sorted(torch_grads), sorted(np_grads), "parameter names differ")
+    *,
+    x_seq: np.ndarray,
+    d_model: int,
+    nhead: int,
+    dim_feedforward: int,
+    src_mask=None,
+    src_key_padding_mask=None,
+    is_causal: bool = False,
+    batch_first: bool = False,
+    norm_first: bool = False,
+    bias: bool = True,
+    activation: str = "relu",
+    layer_norm_eps: float = 1e-5,
+    seed: int = 0,
+    atol: float = 2e-12,
+    rtol: float = 1e-10,
+) -> dict[str, float]:
+    """Compare forward output, input gradient and every parameter gradient.
+
+    ``x_seq`` always has the canonical sequence-first shape ``(L, N, E)``;
+    the helper transposes it for ``batch_first`` and squeezes ``N`` for
+    unbatched 2-D input.
+    """
+    numpy_layer, torch_layer = make_pair(
+        d_model,
+        nhead,
+        dim_feedforward,
+        dropout=0.0,
+        activation=activation,
+        layer_norm_eps=layer_norm_eps,
+        batch_first=batch_first,
+        norm_first=norm_first,
+        bias=bias,
+    )
+
+    unbatched = x_seq.ndim == 2
+    if unbatched:
+        x_seq = x_seq[:, None, :]
+    raw = torch.tensor(x_seq, dtype=torch.float64, requires_grad=True)
+    if unbatched:
+        torch_input = raw[:, 0, :]
+        numpy_input = x_seq[:, 0, :]
+    elif batch_first:
+        torch_input = raw.transpose(0, 1)
+        numpy_input = x_seq.transpose(1, 0, 2)
+    else:
+        torch_input = raw
+        numpy_input = x_seq
+
+    numpy_out = numpy_layer(
+        numpy_input,
+        src_mask=src_mask,
+        src_key_padding_mask=src_key_padding_mask,
+        is_causal=is_causal,
+    )
+    torch_out = torch_layer(
+        torch_input,
+        src_mask=torch.as_tensor(src_mask)
+        if src_mask is not None
+        else None,
+        src_key_padding_mask=torch.as_tensor(src_key_padding_mask)
+        if src_key_padding_mask is not None
+        else None,
+        is_causal=is_causal,
+    )
+
+    rng = np.random.default_rng(seed)
+    dout = rng.normal(size=numpy_out.shape)
+    numpy_dx = numpy_layer.backward(dout)
+    torch_out.backward(torch.tensor(dout, dtype=torch.float64))
+
+    expected_dx = raw.grad.numpy()
+    if unbatched:
+        expected_dx = expected_dx[:, 0, :]
+    elif batch_first:
+        expected_dx = expected_dx.transpose(1, 0, 2)
+
+    result = {
+        "forward": assert_close(
+            testcase, numpy_out, torch_out.detach().numpy(), atol=atol, rtol=rtol,
+            msg="forward",
+        ),
+        "d_src": assert_close(
+            testcase, numpy_dx, expected_dx, atol=atol, rtol=rtol, msg="d_src"
+        ),
+    }
+
+    torch_params = dict(torch_layer.named_parameters())
+    testcase.assertEqual(
+        set(numpy_layer.grads), set(torch_params), "parameter-name mismatch"
+    )
     worst = 0.0
-    for name in torch_grads:
-        tg, ng = torch_grads[name], np_grads[name]
-        if tg is None or ng is None:
-            testcase.assertEqual(tg is None, ng is None, f"grad None mismatch for {name}")
-            continue
+    for name, parameter in torch_params.items():
         worst = max(
             worst,
             assert_close(
                 testcase,
-                ng,
-                tg,
+                numpy_layer.grads[name],
+                parameter.grad.numpy(),
                 atol=atol,
                 rtol=rtol,
-                msg=f"{msg} grad[{name}]",
+                msg=f"d[{name}]",
             ),
         )
-    return worst
+    result["param_grads"] = worst
+    return result
 
 
-def mha_parity(
-    testcase,
-    torch_module: torch.nn.MultiheadAttention,
-    np_module,
-    query: np.ndarray,
-    key: np.ndarray,
-    value: np.ndarray,
+def scalar_loss(
+    layer: TransformerEncoderLayer,
+    x: np.ndarray,
+    dout: np.ndarray,
     *,
-    need_weights: bool = False,
-    attn_mask=None,
-    key_padding_mask=None,
-    average_attn_weights: bool = True,
+    src_mask=None,
+    src_key_padding_mask=None,
     is_causal: bool = False,
-    atol: float = 1e-10,
-    rtol: float = 1e-8,
-) -> tuple[float, float]:
-    """Run forward+backward in both frameworks and compare outputs/grads."""
-    torch_module.eval()
-    np_module.eval()
-    torch_module.zero_grad(set_to_none=True)
-    np_module.zero_grad(set_to_none=True)
-    copy_weights(torch_module, np_module)
-
-    def to_torch_mask(mask):
-        return None if mask is None else torch.tensor(mask)
-
-    tq = torch_tensor(query)
-    tk = torch_tensor(key)
-    tv = torch_tensor(value)
-    nq = Tensor(query.copy(), requires_grad=True)
-    nk = Tensor(key.copy(), requires_grad=True)
-    nv = Tensor(value.copy(), requires_grad=True)
-
-    out_t, weights_t = torch_module(
-        tq,
-        tk,
-        tv,
-        key_padding_mask=to_torch_mask(key_padding_mask),
-        need_weights=need_weights,
-        attn_mask=to_torch_mask(attn_mask),
-        average_attn_weights=average_attn_weights,
+) -> float:
+    """Return ``sum(forward(x) * dout)``; its gradient w.r.t. output is dout."""
+    out = layer.forward(
+        x,
+        src_mask=src_mask,
+        src_key_padding_mask=src_key_padding_mask,
         is_causal=is_causal,
     )
-    out_n, weights_n = np_module(
-        nq,
-        nk,
-        nv,
-        key_padding_mask=key_padding_mask,
-        need_weights=need_weights,
-        attn_mask=attn_mask,
-        average_attn_weights=average_attn_weights,
-        is_causal=is_causal,
-    )
-
-    worst_out = assert_close(testcase, out_n.data, out_t.detach().numpy(), atol, rtol, "mha output")
-    if need_weights:
-        testcase.assertIsNotNone(weights_n)
-        worst_out = max(
-            worst_out,
-            assert_close(
-                testcase,
-                weights_n.data,
-                weights_t.detach().numpy(),
-                atol,
-                rtol,
-                "mha weights",
-            ),
-        )
-    else:
-        testcase.assertIsNone(weights_n)
-
-    np_dtype = np.float64 if out_t.dtype == torch.float64 else np.float32
-    coeff = np.random.default_rng(123).standard_normal(out_t.shape).astype(np_dtype)
-    coeff_t = torch.tensor(coeff, dtype=out_t.dtype)
-    (out_t * coeff_t).sum().backward()
-    (out_n * Tensor(coeff)).sum().backward()
-
-    worst_grad = assert_close(
-        testcase, nq.grad.data, tq.grad.detach().numpy(), atol, rtol, "mha grad query"
-    )
-    worst_grad = max(
-        worst_grad,
-        assert_close(
-            testcase, nk.grad.data, tk.grad.detach().numpy(), atol, rtol, "mha grad key"
-        ),
-    )
-    worst_grad = max(
-        worst_grad,
-        assert_close(
-            testcase, nv.grad.data, tv.grad.detach().numpy(), atol, rtol, "mha grad value"
-        ),
-    )
-    worst_grad = max(
-        worst_grad,
-        assert_param_grads_close(testcase, torch_module, np_module, atol, rtol, "mha"),
-    )
-    return worst_out, worst_grad
+    return float(np.sum(out * dout))

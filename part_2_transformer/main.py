@@ -1,6 +1,13 @@
-"""Demo: NumPy TransformerEncoderLayer parity with torch and a tiny training run.
+"""Demo: one NumPy transformer encoder layer vs its torch twin.
 
-Run from part_2_transformer:
+The script has two parts:
+
+1. forward/backward parity for a single layer (output, input gradient and all
+   parameter gradients) on several configurations and masks;
+2. synchronized SGD training of the NumPy layer and the torch layer, with the
+   same data, initial weights and updates.
+
+Run from ``part_2_transformer``::
 
     ../.venv/bin/python main.py
 """
@@ -8,7 +15,6 @@ Run from part_2_transformer:
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -18,189 +24,267 @@ if str(ROOT) not in sys.path:
 import numpy as np
 import torch
 
-from src.nptorch import Tensor, nn, optim
+from src.nptorch import TransformerEncoderLayer
 
 
-def copy_weights(torch_module, np_module) -> None:
-    np_module.load_state_dict(
-        {key: value.detach().numpy() for key, value in torch_module.state_dict().items()}
-    )
+def build_pair(
+    d_model: int = 8,
+    nhead: int = 2,
+    dim_feedforward: int = 16,
+    *,
+    seed: int = 0,
+    dropout: float = 0.0,
+    activation: str = "relu",
+    batch_first: bool = False,
+    norm_first: bool = False,
+    bias: bool = True,
+) -> tuple[TransformerEncoderLayer, torch.nn.TransformerEncoderLayer]:
+    """Create a NumPy layer and a torch layer with identical parameters."""
+    torch.manual_seed(seed)
+    torch_layer = torch.nn.TransformerEncoderLayer(
+        d_model=d_model,
+        nhead=nhead,
+        dim_feedforward=dim_feedforward,
+        dropout=dropout,
+        activation=activation,
+        batch_first=batch_first,
+        norm_first=norm_first,
+        bias=bias,
+        dtype=torch.float64,
+    ).eval()
+    numpy_layer = TransformerEncoderLayer(
+        d_model=d_model,
+        nhead=nhead,
+        dim_feedforward=dim_feedforward,
+        dropout=dropout,
+        activation=activation,
+        batch_first=batch_first,
+        norm_first=norm_first,
+        bias=bias,
+    ).eval()
+    numpy_layer.load_state_dict(torch_layer.state_dict())
+    return numpy_layer, torch_layer
 
 
-def maxdiff(actual, expected) -> float:
+def maxdiff(actual: np.ndarray, expected: np.ndarray) -> float:
+    """Maximum absolute elementwise difference."""
     return float(np.max(np.abs(np.asarray(actual) - np.asarray(expected))))
 
 
-def parity_demo(
-    label: str,
+def make_data(
+    seed: int = 7,
+    seq_len: int = 6,
+    batch_size: int = 8,
+    d_model: int = 8,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Create a smooth token-wise regression target for the training demo."""
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=(seq_len, batch_size, d_model))
+    projection = rng.normal(size=(d_model, d_model)) / np.sqrt(d_model)
+    target = np.tanh(x @ projection + 0.2)
+    return x, target
+
+
+def gradient_report(
+    numpy_layer: TransformerEncoderLayer,
     torch_layer: torch.nn.TransformerEncoderLayer,
-    np_layer,
     x: np.ndarray,
-    dtype: np.dtype,
-) -> None:
-    torch_layer.eval()
-    np_layer.eval()
-    copy_weights(torch_layer, np_layer)
-    xt = torch.tensor(x.copy(), requires_grad=True)
-    xn = Tensor(x.copy(), requires_grad=True)
-    out_t = torch_layer(xt)
-    out_n = np_layer(xn)
-    coeff = np.random.default_rng(0).standard_normal(out_t.shape).astype(dtype)
-    loss_t = (out_t * torch.tensor(coeff)).sum()
-    loss_n = (out_n * Tensor(coeff)).sum()
-    loss_t.backward()
-    loss_n.backward()
-    param_diff = 0.0
-    for name, param in np_layer.named_parameters():
-        torch_param = dict(torch_layer.named_parameters())[name]
-        param_diff = max(param_diff, maxdiff(param.grad.data, torch_param.grad.numpy()))
-    loss_abs = abs(loss_n.item() - loss_t.item())
-    loss_rel = loss_abs / max(1.0, abs(loss_t.item()))
-    print(
-        f"{label:10s} forward={maxdiff(out_n.data, out_t.detach().numpy()):.2e}  "
-        f"loss={loss_abs:.2e} (rel {loss_rel:.1e})  "
-        f"input_grad={maxdiff(xn.grad.data, xt.grad.numpy()):.2e}  "
-        f"param_grad={param_diff:.2e}"
+    *,
+    src_mask=None,
+    src_key_padding_mask=None,
+    is_causal: bool = False,
+    seed: int = 1,
+) -> dict[str, float]:
+    """Compare output, input gradient and all parameter gradients."""
+    numpy_out = numpy_layer(
+        x,
+        src_mask=src_mask,
+        src_key_padding_mask=src_key_padding_mask,
+        is_causal=is_causal,
     )
+    torch_input = torch.tensor(x, dtype=torch.float64, requires_grad=True)
+    torch_out = torch_layer(
+        torch_input,
+        src_mask=torch.as_tensor(src_mask) if src_mask is not None else None,
+        src_key_padding_mask=torch.as_tensor(src_key_padding_mask)
+        if src_key_padding_mask is not None
+        else None,
+        is_causal=is_causal,
+    )
+    forward_diff = maxdiff(numpy_out, torch_out.detach().numpy())
+
+    cotangent = np.random.default_rng(seed).normal(size=numpy_out.shape)
+    numpy_layer.zero_grad()
+    numpy_dx = numpy_layer.backward(cotangent)
+    torch_out.backward(torch.tensor(cotangent, dtype=torch.float64))
+
+    input_grad_diff = maxdiff(numpy_dx, torch_input.grad.numpy())
+    parameter_grad_diff = 0.0
+    for name, parameter in torch_layer.named_parameters():
+        parameter_grad_diff = max(
+            parameter_grad_diff,
+            maxdiff(numpy_layer.grads[name], parameter.grad.numpy()),
+        )
+    return {
+        "forward": forward_diff,
+        "d_src": input_grad_diff,
+        "d_params": parameter_grad_diff,
+    }
 
 
-def encoder_demo() -> None:
-    d_model, nhead, ffn, num_layers = 16, 4, 32, 3
-    torch_layer = torch.nn.TransformerEncoderLayer(
-        d_model, nhead, dim_feedforward=ffn, dtype=torch.float64
-    )
-    np_layer = nn.TransformerEncoderLayer(
-        d_model, nhead, dim_feedforward=ffn, dtype=np.float64
-    )
-    torch_encoder = torch.nn.TransformerEncoder(
+def train_twin(
+    numpy_layer: TransformerEncoderLayer,
+    torch_layer: torch.nn.TransformerEncoderLayer,
+    x: np.ndarray,
+    target: np.ndarray,
+    *,
+    steps: int = 80,
+    learning_rate: float = 0.1,
+    report_every: int = 10,
+) -> tuple[list[tuple[int, float, float]], dict[str, float]]:
+    """Train both layers with synchronized plain SGD.
+
+    The scalar loss is mean squared error.  The NumPy gradient comes from the
+    hand-written ``backward``; the torch gradient comes from autograd.  Both
+    sides then apply exactly the same SGD update.
+    """
+    torch_target = torch.tensor(target, dtype=torch.float64)
+    torch_x = torch.tensor(x, dtype=torch.float64)
+    history: list[tuple[int, float, float]] = []
+    max_grad_diff = 0.0
+    max_parameter_diff = 0.0
+
+    for step in range(steps):
+        output = numpy_layer(x)
+        difference = output - target
+        loss = float(np.mean(difference * difference))
+        dout = 2.0 * difference / difference.size
+        numpy_layer.zero_grad()
+        numpy_layer.backward(dout)
+
+        torch_output = torch_layer(torch_x)
+        torch_loss = torch.nn.functional.mse_loss(torch_output, torch_target)
+        torch_layer.zero_grad(set_to_none=True)
+        torch_loss.backward()
+
+        torch_parameters = dict(torch_layer.named_parameters())
+        for name, parameter in torch_parameters.items():
+            max_grad_diff = max(
+                max_grad_diff,
+                maxdiff(numpy_layer.grads[name], parameter.grad.numpy()),
+            )
+
+        with torch.no_grad():
+            for parameter in torch_parameters.values():
+                parameter -= learning_rate * parameter.grad
+        for name, parameter in numpy_layer.params.items():
+            parameter -= learning_rate * numpy_layer.grads[name]
+
+        for name, parameter in torch_parameters.items():
+            max_parameter_diff = max(
+                max_parameter_diff,
+                maxdiff(numpy_layer.params[name], parameter.detach().numpy()),
+            )
+
+        history.append((step, loss, float(torch_loss.detach())))
+        if step % report_every == 0 or step == steps - 1:
+            print(
+                f"step {step:3d}  numpy_loss={loss:.6f}  "
+                f"torch_loss={float(torch_loss.detach()):.6f}"
+            )
+        numpy_layer.zero_grad()
+
+    return history, {
+        "max_grad_diff": max_grad_diff,
+        "max_parameter_diff": max_parameter_diff,
+    }
+
+
+def parity_demo() -> None:
+    """Print forward/backward parity for several layer configurations."""
+    print("\n1. Forward / backward parity with torch")
+    print("-" * 78)
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(4, 3, 8))
+
+    cases = [
+        ("post-norm", {}),
+        ("pre-norm", {"norm_first": True}),
+        ("gelu", {"activation": "gelu"}),
+        ("no bias", {"bias": False}),
+    ]
+    print(f"{'configuration':<14} {'forward':>10} {'d_src':>10} {'d_params':>10}")
+    for label, options in cases:
+        numpy_layer, torch_layer = build_pair(**options)
+        report = gradient_report(numpy_layer, torch_layer, x)
+        print(
+            f"{label:<14} {report['forward']:>10.2e} "
+            f"{report['d_src']:>10.2e} {report['d_params']:>10.2e}"
+        )
+
+    numpy_layer, torch_layer = build_pair()
+    mask = np.zeros((4, 4), dtype=bool)
+    mask[0, 1] = True
+    mask[2, 3] = True
+    key_padding = np.zeros((3, 4), dtype=bool)
+    key_padding[1, 0] = True
+    report = gradient_report(
+        numpy_layer,
         torch_layer,
-        num_layers,
-        norm=torch.nn.LayerNorm(d_model, dtype=torch.float64),
-        enable_nested_tensor=False,
-    )
-    np_encoder = nn.TransformerEncoder(
-        np_layer,
-        num_layers,
-        norm=nn.LayerNorm(d_model, dtype=np.float64),
-        enable_nested_tensor=False,
-    )
-    copy_weights(torch_encoder, np_encoder)
-    torch_encoder.eval()
-    np_encoder.eval()
-    rng = np.random.default_rng(5)
-    x = rng.standard_normal((5, 3, d_model))
-    mask = np.triu(np.ones((5, 5), dtype=bool), k=1)
-    key_padding_mask = np.zeros((3, 5), dtype=bool)
-    key_padding_mask[0, -2:] = True
-    xt = torch.tensor(x, requires_grad=True)
-    xn = Tensor(x.copy(), requires_grad=True)
-    out_t = torch_encoder(
-        xt,
-        mask=torch.tensor(mask),
-        src_key_padding_mask=torch.tensor(key_padding_mask),
-    )
-    out_n = np_encoder(
-        xn,
-        mask=mask,
-        src_key_padding_mask=key_padding_mask,
-    )
-    coeff = rng.standard_normal(out_t.shape)
-    (out_t * torch.tensor(coeff)).sum().backward()
-    (out_n * Tensor(coeff)).sum().backward()
-    param_diff = max(
-        maxdiff(param.grad.data, dict(torch_encoder.named_parameters())[name].grad.numpy())
-        for name, param in np_encoder.named_parameters()
+        x,
+        src_mask=mask,
+        src_key_padding_mask=key_padding,
     )
     print(
-        f"encoder    layers={num_layers}, norm: "
-        f"forward={maxdiff(out_n.data, out_t.detach().numpy()):.2e}  "
-        f"input_grad={maxdiff(xn.grad.data, xt.grad.numpy()):.2e}  "
-        f"param_grad={param_diff:.2e}"
+        f"{'masks':<14} {report['forward']:>10.2e} "
+        f"{report['d_src']:>10.2e} {report['d_params']:>10.2e}"
     )
 
-
-def benchmark() -> None:
-    d_model, nhead, seq, batch = 512, 8, 16, 4
-    torch_layer = torch.nn.TransformerEncoderLayer(d_model, nhead).eval()
-    np_layer = nn.TransformerEncoderLayer(d_model, nhead).eval()
-    copy_weights(torch_layer, np_layer)
-    x = np.random.default_rng(1).standard_normal((seq, batch, d_model)).astype(np.float32)
-    xt = torch.tensor(x)
-    xn = Tensor(x.copy())
-
-    def timeit(fn, repeats: int = 5) -> float:
-        fn()
-        fn()
-        start = time.perf_counter()
-        for _ in range(repeats):
-            fn()
-        return (time.perf_counter() - start) / repeats
-
-    torch_fwd = timeit(lambda: torch_layer(xt))
-    np_fwd = timeit(lambda: np_layer(xn))
-    torch_bwd = timeit(lambda: torch_layer(xt).sum().backward())
-    np_bwd = timeit(lambda: np_layer(xn).sum().backward())
+    causal = np.triu(np.ones((4, 4), dtype=bool), 1)
+    numpy_layer, torch_layer = build_pair(batch_first=True)
+    x_batch_first = x.transpose(1, 0, 2)
+    report = gradient_report(
+        numpy_layer,
+        torch_layer,
+        x_batch_first,
+        src_mask=causal,
+        is_causal=True,
+    )
     print(
-        f"default layer: torch fwd {torch_fwd*1e3:.1f} ms, numpy fwd {np_fwd*1e3:.1f} ms; "
-        f"torch fwd+bwd {torch_bwd*1e3:.1f} ms, numpy fwd+bwd {np_bwd*1e3:.1f} ms"
+        f"{'causal':<14} {report['forward']:>10.2e} "
+        f"{report['d_src']:>10.2e} {report['d_params']:>10.2e}"
     )
 
 
 def training_demo() -> None:
-    d_model, nhead, ffn, seq, batch = 32, 4, 64, 8, 4
-    torch.manual_seed(0)
-    torch_layer = torch.nn.TransformerEncoderLayer(
-        d_model, nhead, dim_feedforward=ffn, dtype=torch.float64
-    ).eval()
-    np_layer = nn.TransformerEncoderLayer(
-        d_model, nhead, dim_feedforward=ffn, dtype=np.float64
-    ).eval()
-    copy_weights(torch_layer, np_layer)
-    rng = np.random.default_rng(2)
-    x = rng.standard_normal((seq, batch, d_model))
-    target = rng.standard_normal((seq, batch, d_model))
-    torch_opt = torch.optim.AdamW(torch_layer.parameters(), lr=1e-3)
-    np_opt = optim.AdamW(np_layer.parameters(), lr=1e-3)
-    torch_loss_fn = torch.nn.MSELoss()
-    np_loss_fn = nn.MSELoss()
-    print("training with AdamW (eval mode, same initial weights):")
-    for step in range(1, 11):
-        torch_opt.zero_grad()
-        np_opt.zero_grad()
-        loss_t = torch_loss_fn(torch_layer(torch.tensor(x)), torch.tensor(target))
-        loss_n = np_loss_fn(np_layer(Tensor(x.copy())), Tensor(target))
-        loss_t.backward()
-        loss_n.backward()
-        torch_opt.step()
-        np_opt.step()
-        if step % 5 == 0:
-            print(f"  step {step:2d}: torch={loss_t.item():.6f} numpy={loss_n.item():.6f}")
-    param_diff = max(
-        maxdiff(param.data, dict(torch_layer.named_parameters())[name].detach().numpy())
-        for name, param in np_layer.named_parameters()
+    """Train one layer on both implementations and compare the trajectories."""
+    print("\n2. Synchronized training of one layer")
+    print("-" * 78)
+    numpy_layer, torch_layer = build_pair()
+    x, target = make_data()
+    history, summary = train_twin(numpy_layer, torch_layer, x, target)
+    initial = history[0][1]
+    final = history[-1][1]
+    print(
+        f"\nloss: {initial:.6f} -> {final:.6f} "
+        f"({100.0 * final / initial:.1f}% of the initial value)"
     )
-    print(f"  final parameter maxdiff: {param_diff:.2e}")
+    print(f"max |gradient diff| during training: {summary['max_grad_diff']:.2e}")
+    print(f"max |parameter diff| after updates:  {summary['max_parameter_diff']:.2e}")
+
+    state_keys_match = set(numpy_layer.state_dict()) == set(
+        torch_layer.state_dict()
+    )
+    print(f"state_dict keys match torch: {state_keys_match}")
 
 
 def main() -> None:
-    print(f"torch {torch.__version__}, numpy {np.__version__}")
-    print("TransformerEncoderLayer parity (all parameter and input grads):")
-    parity_demo(
-        "float64",
-        torch.nn.TransformerEncoderLayer(16, 4, dim_feedforward=32, dtype=torch.float64),
-        nn.TransformerEncoderLayer(16, 4, dim_feedforward=32, dtype=np.float64),
-        np.random.default_rng(3).standard_normal((5, 3, 16)),
-        np.float64,
+    print(f"numpy {np.__version__}, torch {torch.__version__}")
+    print(
+        "layer: d_model=8, nhead=2, dim_feedforward=16, "
+        "dropout=0.0, float64"
     )
-    parity_demo(
-        "default32",
-        torch.nn.TransformerEncoderLayer(512, 8),
-        nn.TransformerEncoderLayer(512, 8),
-        np.random.default_rng(4).standard_normal((4, 2, 512)).astype(np.float32),
-        np.float32,
-    )
-    encoder_demo()
-    benchmark()
+    parity_demo()
     training_demo()
 
 

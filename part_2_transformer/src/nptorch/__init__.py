@@ -1,28 +1,11 @@
-"""A small torch-like autograd/nn stack on top of NumPy."""
+"""A NumPy transformer encoder layer with explicit backpropagation.
 
-from . import functional, init, nn, optim
-from .tensor import (
-    Parameter,
-    Tensor,
-    default_dtype,
-    enable_grad,
-    is_grad_enabled,
-    manual_seed,
-    no_grad,
-    set_default_dtype,
-)
+The package intentionally contains no autograd engine and no tensor class:
+``TransformerEncoderLayer`` operates on plain ``numpy.ndarray`` objects and
+implements ``forward`` / ``backward`` by hand.
+"""
 
-__all__ = [
-    "Tensor",
-    "Parameter",
-    "no_grad",
-    "enable_grad",
-    "is_grad_enabled",
-    "manual_seed",
-    "default_dtype",
-    "set_default_dtype",
-    "functional",
-    "init",
-    "nn",
-    "optim",
-]
+from . import init, nn
+from .nn import TransformerEncoderLayer
+
+__all__ = ["TransformerEncoderLayer", "init", "nn"]

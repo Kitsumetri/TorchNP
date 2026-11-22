@@ -1,202 +1,267 @@
-# Lab 2. TransformerEncoderLayer и TransformerEncoder на NumPy
+# TransformerEncoderLayer на NumPy: forward и backward без autograd
 
-Реализация `torch.nn.TransformerEncoderLayer` с дефолтными параметрами
-(`d_model=512`, `nhead=8`, `dim_feedforward=2048`, `dropout=0.1`,
-`activation=relu`, `layer_norm_eps=1e-5`, `batch_first=False`,
-`norm_first=False`, `bias=True`) и стека `torch.nn.TransformerEncoder`
-на чистом NumPy: forward и backward написаны вручную, без `torch.autograd`.
+Реализация одного слоя трансформера, эквивалентного
+`torch.nn.TransformerEncoderLayer`, на чистых `numpy.ndarray`.
 
-Чтобы не писать разрозненные `backward` для каждого слоя, сначала сделан
-небольшой torch-подобный autograd-стек:
+В проекте **нет autograd**, нет класса `Tensor` и нет графа вычислений.
+`forward` сохраняет промежуточные значения, а `backward` вручную применяет
+chain rule, накапливает градиенты параметров и возвращает градиент по входу.
+Все формулы выведены в docstring-ах:
+[`ops.py`](src/nptorch/nn/ops.py) — отдельные операции,
+[`transformer.py`](src/nptorch/nn/transformer.py) — attention, FFN, layer norm
+и полная цепочка обратного прохода слоя.
 
-- `Tensor` с `requires_grad`, `grad`, `backward()`, `detach()`, `no_grad()`;
-- функциональные операции с аналитическими градиентами: арифметика,
-  broadcasting, `matmul`, `softmax`, `layer_norm`, `gelu`, `dropout`,
-  маски, редукции, reshape/transpose/permute/slice;
-- `nn.Module`, `nn.ModuleList`, `Parameter`, `state_dict` / `load_state_dict`;
-- `nn.Linear`, `nn.LayerNorm`, `nn.Dropout`, `nn.ReLU`, `nn.GELU`,
-  `nn.MultiheadAttention`, `nn.MSELoss`;
-- `nn.TransformerEncoderLayer` и `nn.TransformerEncoder` (клонирование
-  слоёв, финальный `norm`, канонизация масок, автоопределение `is_causal`);
-- `optim.SGD`, `optim.Adam`, `optim.AdamW`.
+## Что реализовано
 
-Интерфейсы и имена параметров специально совместимы с torch: веса можно
-загрузить напрямую из `torch.nn.TransformerEncoderLayer.state_dict()`.
+- `TransformerEncoderLayer` с параметрами, совпадающими по именам и форме с
+  `torch.nn.TransformerEncoderLayer`:
+  `self_attn.in_proj_weight`, `self_attn.out_proj.weight`, `linear1.weight`,
+  `norm1.weight` и т.д.
+- Режимы `post-norm` (по умолчанию) и `norm_first=True` (pre-norm).
+- Активации `relu` и точный `gelu` (через `erf`).
+- `bias=True/False`, `batch_first=True/False`, `layer_norm_eps`, `dropout`.
+- Вход `(L, N, E)`, `(N, L, E)` при `batch_first=True` или unbatched `(L, E)`.
+- `src_mask` (bool или аддитивная float-маска), `src_key_padding_mask`,
+  `is_causal` с семантикой PyTorch MHA.
+- `state_dict()` / `load_state_dict()` с torch-ключами: веса можно копировать
+  из torch-слоя и обратно.
+- `zero_grad()`, `train()`, `eval()`, `params`, `grads`, `named_parameters()`.
+- Инициализация повторяет torch: Xavier для `in_proj_weight`, Kaiming для
+  линейных весов и `out_proj`, `U(-1/√fan_in, 1/√fan_in)` для bias внутри
+  FFN, нули для остальных bias, единицы для весов LayerNorm.
+
+Больше ничего в пакет не входит: `TransformerEncoder`, оптимизаторы,
+autograd-движок и прочие слои удалены.
 
 ## Структура
 
 ```
 part_2_transformer/
+├── main.py                  # parity-демо и синхронное обучение с torch
+├── main.ipynb               # то же в ноутбуке + график обучения
+├── README.md
 ├── src/nptorch/
-│   ├── tensor.py          # Tensor, autograd-движок, no_grad
-│   ├── functional.py      # операции и ручные backward-формулы
-│   ├── init.py            # xavier/kaiming/uniform как в torch.nn.init
-│   ├── optim.py           # SGD, Adam, AdamW
+│   ├── __init__.py          # TransformerEncoderLayer, init, nn
+│   ├── init.py              # xavier/kaiming/uniform/constant
 │   └── nn/
-│       ├── module.py      # Module, state_dict, train/eval
-│       ├── container.py   # ModuleList
-│       ├── linear.py
-│       ├── normalization.py
-│       ├── dropout.py
-│       ├── activation.py
-│       ├── attention.py   # MultiheadAttention
-│       ├── transformer.py # TransformerEncoderLayer + TransformerEncoder
-│       └── loss.py
-├── tests/
-│   ├── test_autograd.py   # операции против torch и конечных разностей
-│   ├── test_nn.py         # слои и MHA
-│   ├── test_transformer.py # главный тест: слой против torch
-│   ├── test_encoder.py     # стек слоёв против torch
-│   ├── test_modulelist.py  # контейнер подмодулей
-│   ├── test_api.py        # публичный API и error paths
-│   └── test_optim.py      # оптимизаторы против torch.optim
-├── main.py                # демонстрация паритета и обучения
-└── main.ipynb             # исполненный ноутбук: паритет + обучение XOR
+│       ├── __init__.py
+│       ├── ops.py           # linear, layer_norm, dropout, softmax, relu, gelu
+│       └── transformer.py   # MHA, FFN, TransformerEncoderLayer
+└── tests/
+    ├── test_ops.py          # операции против torch
+    ├── test_layer.py        # forward/backward parity, маски, API
+    ├── test_training.py     # синхронное обучение с torch
+    └── utils.py
 ```
+
+## Быстрый старт
+
+```python
+import numpy as np
+from src.nptorch import TransformerEncoderLayer
+
+layer = TransformerEncoderLayer(
+    d_model=8, nhead=2, dim_feedforward=16, dropout=0.0
+).eval()
+
+x = np.random.default_rng(0).normal(size=(4, 3, 8))  # (L, N, E)
+out = layer(x)
+
+# Отдельный обратный проход: forward уже сохранён в кэше.
+layer.zero_grad()
+dout = np.random.default_rng(1).normal(size=out.shape)
+dx = layer.backward(dout)
+
+print(out.shape, dx.shape)
+print(sorted(layer.grads))       # градиенты всех параметров
+for name, parameter in layer.named_parameters():
+    parameter -= 0.01 * layer.grads[name]   # обычное SGD-обновление
+```
+
+`forward` и `backward` — два отдельных вызова. `backward` использует кэш
+последнего `forward`; повторный `forward` перезаписывает кэш. Повторный
+`backward` без нового `forward` **накапливает** градиенты, как torch.
+
+## Математика
+
+### Forward
+
+Для входа $X \in \mathbb{R}^{L \times N \times E}$ и $d_h = E/H$:
+
+$$
+Q = XW_q^\top+b_q,\quad K = XW_k^\top+b_k,\quad V = XW_v^\top+b_v
+$$
+
+$$
+S_h = \frac{Q_hK_h^\top}{\sqrt{d_h}} + M,\qquad A_h = \operatorname{softmax}(S_h)
+$$
+
+$$
+A_h^d = \operatorname{dropout}(A_h),\qquad
+\operatorname{MHA}(X) = \operatorname{concat}_h(A_h^dV_h)W_o^\top+b_o,\qquad
+\operatorname{SA}(X) = \operatorname{dropout}(\operatorname{MHA}(X))
+$$
+
+$$
+\operatorname{FF}(X) = \operatorname{dropout}\left(
+W_2\operatorname{dropout}\left(\sigma(W_1X+b_1)\right)+b_2\right)
+$$
+
+Post-norm:
+
+$$
+Z = \operatorname{LN}_1(X+\operatorname{SA}(X)),\qquad
+Y = \operatorname{LN}_2(Z+\operatorname{FF}(Z))
+$$
+
+Pre-norm:
+
+$$
+Z = X+\operatorname{SA}(\operatorname{LN}_1(X)),\qquad
+Y = Z+\operatorname{FF}(\operatorname{LN}_2(Z))
+$$
+
+Layer norm для строки $x\in\mathbb{R}^D$:
+
+$$
+\mu = \frac1D\sum_i x_i,\qquad
+\sigma = \sqrt{\frac1D\sum_i(x_i-\mu)^2+\varepsilon},\qquad
+y_i = \gamma_i\frac{x_i-\mu}{\sigma}+\beta_i
+$$
+
+### Backward
+
+Chain rule на уровне слоя (post-norm):
+
+$$
+\bar U_2 = \operatorname{LN}_2'(\bar Y),\qquad
+\bar Z = \bar U_2 + \operatorname{FF}'(\bar U_2),
+$$
+
+$$
+\bar U_1 = \operatorname{LN}_1'(\bar Z),\qquad
+\bar X = \bar U_1 + \operatorname{SA}'(\bar U_1).
+$$
+
+Pre-norm:
+
+$$
+\bar U_1 = \bar Y + \operatorname{LN}_2'(\operatorname{FF}'(\bar Y)),
+\qquad
+\bar X = \bar U_1 + \operatorname{LN}_1'(\operatorname{SA}'(\bar U_1)).
+$$
+
+Ключевые формулы, полностью выведенные в docstring-ах:
+
+- линейный слой: $\bar X = \bar YW$, $\bar W = \bar Y^\top X$, $\bar b=\sum_r\bar Y_r$;
+- layer norm:
+  $\bar x_i = \frac{1}{\sigma}\left[g_i-\frac1D\sum_j g_j-\frac{\hat x_i}{D}\sum_j g_j\hat x_j\right]$,
+  где $g_i=\bar y_i\gamma_i$;
+- softmax: $\bar s_i = p_i\left(\bar p_i-\sum_j p_j\bar p_j\right)$;
+- attention: $\bar A_h^d = \bar O_hV_h^\top$, $\bar V_h=(A_h^d)^\top\bar O_h$,
+  $\bar A_h = \operatorname{dropout}'(\bar A_h^d)$,
+  $\bar S_h = A_h\odot(\bar A_h-\sum_j A_{h,ij}\bar A_{h,ij})$,
+  $\bar Q_h=\frac{1}{\sqrt{d_h}}\bar S_hK_h$,
+  $\bar K_h=\frac{1}{\sqrt{d_h}}\bar S_h^\top Q_h$;
+- dropout: $\bar x_i = m_i\bar y_i/(1-p)$;
+- ReLU: $\bar x_i=\bar y_i\mathbf{1}[x_i>0]$;
+- GELU: $\bar x_i=\bar y_i(\Phi(x_i)+x_i\varphi(x_i))$.
+
+## Маски
+
+- `src_mask`: `(L, S)` или `(N*H, L, S)`. Bool: `True` = запрещённая позиция.
+  Float: аддитивная маска (например, `-inf`).
+- `src_key_padding_mask`: `(N, S)` для батча, `(S,)` для unbatched входа
+  (дополнительно принимается `(1, S)`, torch требует только `(S,)`).
+  Bool: `True` = padding.
+- `is_causal=True` требует переданную `src_mask` (как в torch MHA). Если
+  `src_key_padding_mask` не задан, вместо содержимого `src_mask` применяется
+  верхнетреугольная причинная маска; если padding задан, используется
+  `src_mask`, а флаг игнорируется. Это именно поведение torch 2.15.
+- Полностью замаскированная строка запроса получает нулевые веса внимания и
+  нулевой градиент по score-строке вместо `NaN`. Градиент по входу такой
+  позиции при этом не обязан быть нулём: её value-вектор используют другие
+  запросы.
+
+## Проверка с torch
+
+`main.py` сравнивает NumPy-слой и `torch.nn.TransformerEncoderLayer` с
+одинаковыми весами (`float64`, CPU, `dropout=0`). Сравниваются выход,
+$\partial L/\partial X$ и градиенты **всех** параметров:
+
+```
+configuration     forward      d_src   d_params
+post-norm        6.66e-16   1.33e-15   1.78e-15
+pre-norm         4.44e-16   3.61e-16   8.88e-16
+gelu             4.44e-16   8.88e-16   2.22e-15
+no bias          8.88e-16   1.33e-15   1.78e-15
+masks            6.66e-16   1.33e-15   1.78e-15
+causal           4.44e-16   8.88e-16   2.00e-15
+```
+
+`tests/test_layer.py` независимо от torch проверяет **все** компоненты
+градиента конечными разностями (центральная разность, `eps=1e-6`), включая
+pre-norm, post-norm и dropout с зафиксированными масками. Для dropout=0
+перебираются все параметры и все элементы `dX`; для dropout>0 — также все
+параметры и все элементы `dX` при воспроизводимых масках.
+
+## Демо обучения
+
+`main.py` обучает один слой регрессии на `tanh(XR+b)` и синхронно обновляет
+torch-близнеца теми же градиентами и тем же SGD:
+
+```
+loss: 1.406524 -> 0.287498 (20.4% of the initial value)
+max |gradient diff| during training: 1.67e-16
+max |parameter diff| after updates:  2.22e-16
+state_dict keys match torch: True
+```
+
+Ноутбук [`main.ipynb`](main.ipynb) содержит те же сравнения, проверку
+конечными разностями и график loss для обеих реализаций.
 
 ## Запуск
 
-Из директории `part_2_transformer` (venv лежит в корне проекта):
-
 ```bash
+cd part_2_transformer
+
+# тесты
 ../.venv/bin/python -m unittest discover -s tests -t . -v
-```
 
-Сейчас в наборе 112 тестов; полный прогон занимает около 1.5 секунды.
-
-### Покрытие
-
-`coverage` поставлен в venv как dev-инструмент (в `pyproject.toml` не добавлялся):
-
-```bash
+# покрытие
 COVERAGE_FILE=/tmp/part2.coverage ../.venv/bin/python -m coverage run \
     --branch --source=src/nptorch -m unittest discover -s tests -t .
 COVERAGE_FILE=/tmp/part2.coverage ../.venv/bin/python -m coverage report -m
-```
 
-На момент проверки: **97.2% строк, 88.2% веток, 94.8% combined**. Непокрытыми
-остаются в основном защитные проверки аргументов и редкие ошибки; ключевая
-математика (autograd, attention, слои, encoder) покрыта паритетными тестами
-против torch.
-
-Быстрая демонстрация:
-
-```bash
+# демо
 ../.venv/bin/python main.py
-```
 
-Ноутбук с уже сохранёнными выводами:
-
-```bash
+# ноутбук
 ../.venv/bin/jupyter notebook main.ipynb
 ```
 
-В `main.ipynb` три части: паритет `TransformerEncoderLayer`, паритет
-`TransformerEncoder` и обучение tiny-классификатора на XOR первых/последних
-токенов (300 шагов, ~3.5 секунды на CPU, график loss/accuracy). В конце веса
-обученной NumPy-модели загружаются в torch-двойник и логиты сравниваются
-(расхождение ~1e-15).
+Текущий результат: **80 тестов**, `100%` покрытия операторов и ветвлений
+(`458` statements, `142` branches).
 
-Отдельный тест:
+## Отличия от torch и ограничения
 
-```bash
-../.venv/bin/python -m unittest tests.test_transformer -v
-```
-
-## Что проверяется
-
-Тесты сравнивают не только выход, но и **все градиенты**: по входу и по
-каждому параметру. Для этого в torch-модель загружаются те же веса, что и
-в numpy-модель, а loss задаётся одинаковым случайным коэффициентом.
-
-| Проверка | Режим | Максимальное расхождение |
-|---|---|---|
-| Дефолтный слой `512/8/2048` | float32, eval, forward | ~1e-6 |
-| Дефолтный слой, loss | float32, eval | ~1e-5 (отн. ~1e-7) |
-| Градиент входа | float32, eval | ~1e-6 |
-| Градиенты всех параметров | float32, eval | ~5e-6 |
-| Маленький слой | float64, eval, forward/backward | ~1e-15 |
-| Маски `src_mask` / `src_key_padding_mask` | float64, bool и float | ~1e-15 |
-| `batch_first`, `norm_first`, `gelu`, `bias=False` | float64 | ~1e-15 |
-| Все параметры слоя | конечные разности, float64 | < 2e-6 (порог теста) |
-| 3 шага SGD, параметры после шага | float64 | ~1e-16 |
-| `MultiheadAttention`, включая `need_weights` | float64 | ~1e-15 |
-| `TransformerEncoder` (3 слоя + norm, маски) | float64 | ~1e-15 |
-| `TransformerEncoder` (2 слоя) | float32 | ~1e-6 |
-
-Конечные разности считаются полностью независимо от torch: аналитический
-градиент сравнивается с центральной разностью по каждому элементу входа и
-каждому параметру. Это ловит ошибки, которые не заметны при сравнении двух
-реализаций с одинаковой неверной формулой.
-
-Дропаут в train-режиме нельзя сравнить с torch по значениям: RNG у NumPy и
-torch разный. Поэтому:
-
-- весь слой сравнивается в `eval()` (dropout выключен) на дефолтном
-  `dropout=0.1`;
-- отдельно проверяется train-режим с `dropout=0.0` (точный паритет);
-- для `Dropout` есть тест с явно заданной маской, где проверяется
-  inverted-dropout формула и градиент;
-- train-режим с `dropout>0` проверяется на конечность и форму градиентов.
-
-## Замечания по реализации
-
-- **Autograd.** Каждая операция сохраняет замыкание, которое добавляет
-  градиенты родителям. `backward()` делает топологическую сортировку.
-  Промежуточные градиенты сбрасываются на каждом проходе, а листовые
-  тензоры накапливают градиент, как в torch.
-- **Broadcasting.** Для `add/mul/...` градиент суммируется обратно к форме
-  входа (`_unbroadcast`), поэтому bias и маски работают без ручных циклов.
-- **dtype.** Python-скаляры не поднимают `float32` до `float64` (правила
-  NEP 50 и поведение torch) и конвертируются сразу в dtype второго
-  операнда, поэтому `float64` не теряет точность из-за промежуточного
-  `float32`. Type promotion для int/bool/float следует правилам torch;
-  есть регрессионные тесты на `head_dim=8` (непредставимый в float32
-  масштаб внимания) и на int-тензоры.
-- **Полностью замаскированные строки.** При `need_weights=False` (путь
-  `TransformerEncoderLayer`) внимание для такой строки равно нулю, как в
-  SDPA; при `need_weights=True` сохраняется NaN, как в медленном пути
-  torch.
-- **Производительность.** `F.linear` сплющивает ведущие размерности в один
-  2-D GEMM: `(L, N, E) @ (E, O)` одним вызовом BLAS заметно быстрее, чем
-  `L` маленьких batched-matmul. Это дало ускорение forward примерно в 5
-  раз и backward примерно в 7 раз на дефолтном слое.
-- **Multi-head attention** реализован медленным ручным путём: проекции,
-  reshape по головам, маски, softmax, dropout, `out_proj`. Это совпадает с
-  `torch.nn.functional.multi_head_attention_forward` и даёт полный
-  backward-граф. `add_bias_kv`, `add_zero_attn` и разные `kdim/vdim`
-  намеренно не реализованы (для них бросается `NotImplementedError`).
-- **`is_causal`.** Как и в torch 2.15, `is_causal=True` требует переданного
-  `attn_mask`-намёка; без него бросается `RuntimeError`. У `TransformerEncoder`
-  при `is_causal=None` маска сравнивается со стандартной каузальной и флаг
-  выставляется автоматически, как в torch.
-- **`TransformerEncoder`.** Слои клонируются через `copy.deepcopy`, поэтому
-  стартуют с одинаковыми весами (как в torch), но не разделяют параметры.
-  Поддерживаются финальный `norm`, bool/float маски, 2D/3D вход,
-  `batch_first`, `norm_first`, `gelu`, `bias=False`. Nested tensor в NumPy нет:
-  `enable_nested_tensor` и `mask_check` принимаются для совместимости API, но
-  `use_nested_tensor` всегда `False`.
-- **Numba.** В горячем пути не используется. Локальные замеры row-wise
-  ядер дали ~1.1x для softmax и ~1.7x для layer_norm на форме `(256, 512)`,
-  но на фоне BLAS-матмулов это несколько процентов времени слоя, а numba
-  добавляет компиляцию и второй набор backward-формул. Поэтому оставлен
-  чистый NumPy; отдельного numba-бэкенда нет.
-
-## Ограничения
-
-- Только CPU, float32/float64; CUDA не используется и не устанавливается.
-- Нет `retain_graph`/`create_graph`, второго порядка и in-place операций.
-- Нет fused SDPA/flash-attention; используется ручная математика внимания.
-- `MultiheadAttention` не поддерживает `add_bias_kv`, `add_zero_attn`,
-  `kdim != embed_dim`, `vdim != embed_dim`.
-- `ModuleList.insert` следует семантике Python-list для отрицательных и
-  выходящих за границу индексов; torch 2.15 в этих edge-случаях ведёт себя
-  иначе (KeyError/дырки в ключах). Валидные `insert(0..len)` совпадают.
-- У оптимизаторов нет `state_dict()/load_state_dict()/add_param_group()`;
-  поддерживается один `param_group`.
-- Nested tensor fast path `TransformerEncoder` не реализован (NumPy не умеет
-  ragged tensors). Для точного сравнения передавай в torch
-  `enable_nested_tensor=False`; иначе torch может обнулять выходы в padding-
-  позициях, а numpy-версия считает их обычным образом.
-- Dropout использует собственный NumPy RNG; для воспроизводимости есть
-  `nptorch.manual_seed(seed)`.
+- Все вычисления в `float64`; параметра `dtype`/`device` нет. Вход `float32`
+  приводится к `float64`.
+- Поддерживаются только `activation="relu"` и `activation="gelu"`; callable
+  принимается, если его имя `relu`/`gelu`.
+- `dropout` использует глобальный `numpy.random`, а не RNG torch. Точное
+  сравнение с torch выполняется при `dropout=0` или в режиме `eval()`.
+- Нет nested tensors, `add_bias_kv`, `add_zero_attn`, отдельных `kdim`/`vdim`
+  и `TransformerEncoder` — они не нужны одному слою.
+- Полностью замаскированные строки дают нулевые веса внимания и нулевой
+  score-градиент (safe SDPA convention). Стандартный путь torch для таких
+  строк возвращает такие же конечные значения; `NaN` возможен только в
+  нативном fastpath инференса torch (`eval`, `batch_first=True`, 3-D вход,
+  параметры без `requires_grad`, не более одной маски).
+- `is_causal` — подсказка, а не независимая причинная маска; см. раздел
+  «Маски». NumPy проверяет форму `src_mask` даже тогда, когда hint-режим
+  без padding её игнорирует; torch в этом нестандартном случае может
+  проигнорировать некорректную форму. Целочисленные маски дают `TypeError`
+  (в torch — `AssertionError`).
+- После `forward` нельзя менять `params` или вход in-place до `backward`:
+  кэш хранит ссылки, в отличие от version counter в torch.
