@@ -1,0 +1,25 @@
+[project]
+name = "ml-lab-2"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch",
+    "numpy",
+    "numba",
+    "tqdm",
+    "scikit-learn",
+    "matplotlib",
+    "ipykernel",
+    "jupyter",
+    "pathlib"
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
